@@ -4,6 +4,7 @@ from docx import Document
 from docx.shared import Pt
 from docx.oxml import OxmlElement
 from docx.text.paragraph import Paragraph
+from docx.enum.text import WD_BREAK # Importación necesaria para el salto de página
 import json
 import os
 
@@ -46,9 +47,12 @@ def find_paragraph_index(doc: Document, target_text: str) -> int:
     return -1
 
 def is_heading1(p: Paragraph) -> bool:
+    """Detecta Heading 1 o Título 1 de forma robusta"""
     try:
-        return (p.style.name or "").strip().lower() == "heading 1"
-    except: return False
+        name = (p.style.name or "").lower()
+        return "heading 1" in name or "título 1" in name
+    except:
+        return False
 
 def set_labeled_line(doc: Document, label: str, value: str) -> bool:
     label_norm = (label or "").strip()
@@ -64,14 +68,13 @@ def set_run_font_size(paragraph: Paragraph, size_pt: int) -> None:
         r.font.size = Pt(size_pt)
 
 def add_page_break_after(paragraph: Paragraph) -> Paragraph:
-    """Inserta un salto de página después del párrafo dado."""
     p_break = insert_paragraph_after(paragraph, "")
     run = p_break.add_run()
-    run.add_break(2) # 2 es WD_BREAK.PAGE
+    run.add_break(WD_BREAK.PAGE) # Usando la constante correcta
     return p_break
 
 # -------------------------
-# Secciones Actualizadas
+# Secciones
 # -------------------------
 
 def rebuild_self_feedback_section(doc: Document, auto: dict | None) -> None:
@@ -103,19 +106,16 @@ def rebuild_self_feedback_section(doc: Document, auto: dict | None) -> None:
             ("3. Algo más que quieras compartir.", auto.get("algo_mas"))
         ]
         for label, content in mapping:
-            # Pregunta en negrita (estilo List Paragraph para bullet o Normal)
             p_lab = insert_paragraph_after(cursor, "", style="Normal")
             run = p_lab.add_run(label)
             run.bold = True
             cursor = p_lab
             
-            # Respuesta en normal
             p_txt = insert_paragraph_after(cursor, safe_text(content), style="Normal")
             set_run_font_size(p_txt, 11)
             cursor = p_txt
 
-    # SALTO DE PÁGINA luego de la sección
-    cursor = add_page_break_after(cursor)
+    add_page_break_after(cursor)
 
 def rebuild_feedback_section(doc: Document, evaluaciones: list) -> None:
     start_idx = find_paragraph_index(doc, "Feedback recibido")
@@ -142,7 +142,6 @@ def rebuild_feedback_section(doc: Document, evaluaciones: list) -> None:
         p_eval = insert_paragraph_after(cursor, evaluador, style="Heading 2")
         cursor = p_eval
 
-        # Preguntas y respuestas de pares
         items = [
             ("1. Aspectos positivos", ev.get("positivos")),
             ("2. Aspectos a mejorar", ev.get("mejorar")),
@@ -158,7 +157,6 @@ def rebuild_feedback_section(doc: Document, evaluaciones: list) -> None:
             set_run_font_size(p_a, 11)
             cursor = p_a
         
-        # SALTO DE PÁGINA después de cada evaluador (excepto el último)
         if idx < len(evaluaciones) - 1:
             cursor = add_page_break_after(cursor)
 
@@ -168,38 +166,41 @@ def rebuild_feedback_section(doc: Document, evaluaciones: list) -> None:
 
 @app.post("/generate")
 def generate():
-    data = request.json or {}
-    raw_evaluado = (data.get("evaluado") or "").strip()
-    evaluado = format_name_from_email(raw_evaluado) or PLACEHOLDER
-    mes_ano = (data.get("mes_ano") or "").strip() or PLACEHOLDER
-    
-    auto = data.get("autoevaluacion")
-    if isinstance(auto, str) and auto.strip():
-        try: auto = json.loads(auto)
-        except: auto = None
+    try:
+        data = request.json or {}
+        raw_evaluado = (data.get("evaluado") or "").strip()
+        evaluado = format_name_from_email(raw_evaluado) or PLACEHOLDER
+        mes_ano = (data.get("mes_ano") or "").strip() or PLACEHOLDER
         
-    evs = data.get("evaluaciones") or []
-    if isinstance(evs, str):
-        try: evs = json.loads(evs)
-        except: evs = []
+        auto = data.get("autoevaluacion")
+        evs = data.get("evaluaciones") or []
 
-    template_path = os.environ.get("TEMPLATE_PATH", "template.docx")
-    doc = Document(template_path) if os.path.exists(template_path) else Document()
+        template_path = os.environ.get("TEMPLATE_PATH", "template.docx")
+        if not os.path.exists(template_path):
+            return {"error": f"Template no encontrado en {template_path}"}, 404
 
-    set_labeled_line(doc, "Nombre:", evaluado)
-    set_labeled_line(doc, "Periodo evaluado:", mes_ano)
-    
-    rebuild_self_feedback_section(doc, auto)
-    rebuild_feedback_section(doc, evs)
+        doc = Document(template_path)
 
-    bio = BytesIO()
-    doc.save(bio)
-    bio.seek(0)
-    
-    filename = f"Performance Review – {evaluado} – {mes_ano}.docx"
-    
-    return send_file(bio, as_attachment=True, download_name=filename, 
-                     mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        set_labeled_line(doc, "Nombre:", evaluado)
+        set_labeled_line(doc, "Periodo evaluado:", mes_ano)
+        
+        rebuild_self_feedback_section(doc, auto)
+        rebuild_feedback_section(doc, evs)
+
+        bio = BytesIO()
+        doc.save(bio)
+        bio.seek(0)
+        
+        filename = f"Performance Review – {evaluado} – {mes_ano}.docx"
+        
+        return send_file(bio, as_attachment=True, download_name=filename, 
+                         mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    except Exception as e:
+        # Esto te dirá el error exacto en el log de Railway
+        print(f"Error generando DOCX: {str(e)}")
+        return {"error": str(e)}, 500
 
 if __name__ == "__main__":
-    app.run(port=5000)
+    # Railway usa la variable de entorno PORT
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
