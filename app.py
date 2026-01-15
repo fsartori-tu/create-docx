@@ -10,7 +10,10 @@ import os
 app = Flask(__name__)
 PLACEHOLDER = "{{COMPLETAR}}"
 
-# --- HELPERS EXISTENTES ---
+# -------------------------
+# Helpers
+# -------------------------
+
 def format_name_from_email(value: str) -> str:
     if not value: return ""
     value = value.strip()
@@ -60,9 +63,11 @@ def set_run_font_size(paragraph: Paragraph, size_pt: int) -> None:
     for r in paragraph.runs:
         r.font.size = Pt(size_pt)
 
-# --- NUEVA FUNCIÓN: AUTOEVALUACIÓN ---
+# -------------------------
+# Secciones
+# -------------------------
+
 def rebuild_self_feedback_section(doc: Document, auto: dict | None) -> None:
-    """Reemplaza contenido bajo 'Autoevaluación'"""
     start_idx = find_paragraph_index(doc, "Autoevaluación")
     if start_idx == -1: return
 
@@ -77,12 +82,15 @@ def rebuild_self_feedback_section(doc: Document, auto: dict | None) -> None:
         remove_paragraph(p)
 
     cursor = doc.paragraphs[start_idx]
-    if not auto:
+    
+    # Verificación más flexible de si el objeto autoevaluación tiene contenido real
+    has_content = auto and any(auto.get(k) for k in ["positivos", "mejorar", "algo_mas"])
+
+    if not has_content:
         p = insert_paragraph_after(cursor, "No se registró autoevaluación.", style="Normal")
         set_run_font_size(p, 11)
         return
 
-    # Mapeo de campos según tu lógica de n8n
     mapping = [
         ("Aspectos positivos", auto.get("positivos")),
         ("Aspectos a mejorar", auto.get("mejorar")),
@@ -99,7 +107,6 @@ def rebuild_self_feedback_section(doc: Document, auto: dict | None) -> None:
         set_run_font_size(p_txt, 11)
         cursor = p_txt
 
-# --- FUNCIÓN: FEEDBACK RECIBIDO (CONSERVADA) ---
 def rebuild_feedback_section(doc: Document, evaluaciones: list) -> None:
     start_idx = find_paragraph_index(doc, "Feedback recibido")
     if start_idx == -1: return
@@ -122,7 +129,6 @@ def rebuild_feedback_section(doc: Document, evaluaciones: list) -> None:
 
     for idx, ev in enumerate(evaluaciones):
         evaluador = format_name_from_email(ev.get("evaluador", "")) or PLACEHOLDER
-        
         p_eval = insert_paragraph_after(cursor, evaluador, style="Heading 2")
         cursor = p_eval
 
@@ -139,43 +145,46 @@ def rebuild_feedback_section(doc: Document, evaluaciones: list) -> None:
         if idx < len(evaluaciones) - 1:
             cursor = insert_paragraph_after(cursor, "", style="Normal")
 
-# --- RUTA PRINCIPAL ---
+# -------------------------
+# Ruta Principal
+# -------------------------
+
 @app.post("/generate")
 def generate():
     data = request.json or {}
     
-    # 1. Parseo de datos desde n8n
     raw_evaluado = (data.get("evaluado") or "").strip()
     evaluado = format_name_from_email(raw_evaluado) or PLACEHOLDER
     mes_ano = (data.get("mes_ano") or "").strip() or PLACEHOLDER
     
-    # Manejo robusto de autoevaluacion (dict) y evaluaciones (list)
+    # Autoevaluacion (dict)
     auto = data.get("autoevaluacion")
-    if isinstance(auto, str): 
+    if isinstance(auto, str) and auto.strip():
         try: auto = json.loads(auto)
         except: auto = None
         
+    # Evaluaciones (list)
     evs = data.get("evaluaciones") or []
     if isinstance(evs, str):
         try: evs = json.loads(evs)
         except: evs = []
 
-    # 2. Cargar Template
     template_path = os.environ.get("TEMPLATE_PATH", "template.docx")
     doc = Document(template_path) if os.path.exists(template_path) else Document()
 
-    # 3. Llenar Secciones
     set_labeled_line(doc, "Nombre:", evaluado)
     set_labeled_line(doc, "Periodo evaluado:", mes_ano)
     
     rebuild_self_feedback_section(doc, auto)
     rebuild_feedback_section(doc, evs)
 
-    # 4. Retornar Archivo
     bio = BytesIO()
     doc.save(bio)
     bio.seek(0)
-    filename = f"Performance Review – {evaluado}.docx"
+    
+    # RESTAURADO: mes_ano en el nombre del archivo
+    filename = f"Performance Review – {evaluado} – {mes_ano}.docx"
+    
     return send_file(bio, as_attachment=True, download_name=filename, 
                      mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
