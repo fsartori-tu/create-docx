@@ -101,9 +101,10 @@ def rebuild_self_feedback_section(doc: Document, auto: dict | None) -> None:
         cursor = p
     else:
         mapping = [
-            ("1. Aspectos positivos", auto.get("positivos")),
-            ("2. Aspectos a mejorar", auto.get("mejorar")),
-            ("3. Algo más que quieras compartir.", auto.get("algo_mas"))
+            ("1. Evaluador", auto.get("evaluador")),
+            ("2. Aspectos positivos", auto.get("positivos")),
+            ("3. Aspectos a mejorar", auto.get("mejorar")),
+            ("4. Algo más que quieras compartir.", auto.get("algo_mas"))
         ]
         for label, content in mapping:
             p_lab = insert_paragraph_after(cursor, "", style="Normal")
