@@ -63,8 +63,15 @@ def set_run_font_size(paragraph: Paragraph, size_pt: int) -> None:
     for r in paragraph.runs:
         r.font.size = Pt(size_pt)
 
+def add_page_break_after(paragraph: Paragraph) -> Paragraph:
+    """Inserta un salto de página después del párrafo dado."""
+    p_break = insert_paragraph_after(paragraph, "")
+    run = p_break.add_run()
+    run.add_break(2) # 2 es WD_BREAK.PAGE
+    return p_break
+
 # -------------------------
-# Secciones
+# Secciones Actualizadas
 # -------------------------
 
 def rebuild_self_feedback_section(doc: Document, auto: dict | None) -> None:
@@ -83,29 +90,32 @@ def rebuild_self_feedback_section(doc: Document, auto: dict | None) -> None:
 
     cursor = doc.paragraphs[start_idx]
     
-    # Verificación más flexible de si el objeto autoevaluación tiene contenido real
     has_content = auto and any(auto.get(k) for k in ["positivos", "mejorar", "algo_mas"])
 
     if not has_content:
         p = insert_paragraph_after(cursor, "No se registró autoevaluación.", style="Normal")
         set_run_font_size(p, 11)
-        return
+        cursor = p
+    else:
+        mapping = [
+            ("1. Aspectos positivos", auto.get("positivos")),
+            ("2. Aspectos a mejorar", auto.get("mejorar")),
+            ("3. Algo más que quieras compartir.", auto.get("algo_mas"))
+        ]
+        for label, content in mapping:
+            # Pregunta en negrita (estilo List Paragraph para bullet o Normal)
+            p_lab = insert_paragraph_after(cursor, "", style="Normal")
+            run = p_lab.add_run(label)
+            run.bold = True
+            cursor = p_lab
+            
+            # Respuesta en normal
+            p_txt = insert_paragraph_after(cursor, safe_text(content), style="Normal")
+            set_run_font_size(p_txt, 11)
+            cursor = p_txt
 
-    mapping = [
-        ("Aspectos positivos", auto.get("positivos")),
-        ("Aspectos a mejorar", auto.get("mejorar")),
-        ("Algo más que quieras compartir.", auto.get("algo_mas"))
-    ]
-
-    for label, content in mapping:
-        p_lab = insert_paragraph_after(cursor, "", style="List Paragraph")
-        r = p_lab.add_run(label)
-        r.bold = True
-        cursor = p_lab
-        
-        p_txt = insert_paragraph_after(cursor, safe_text(content), style="Normal")
-        set_run_font_size(p_txt, 11)
-        cursor = p_txt
+    # SALTO DE PÁGINA luego de la sección
+    cursor = add_page_break_after(cursor)
 
 def rebuild_feedback_section(doc: Document, evaluaciones: list) -> None:
     start_idx = find_paragraph_index(doc, "Feedback recibido")
@@ -132,18 +142,25 @@ def rebuild_feedback_section(doc: Document, evaluaciones: list) -> None:
         p_eval = insert_paragraph_after(cursor, evaluador, style="Heading 2")
         cursor = p_eval
 
-        for lab, key in [("Aspectos positivos", "positivos"), 
-                         ("Aspectos a mejorar", "mejorar"), 
-                         ("Algo más...", "algo_mas")]:
-            p_b = insert_paragraph_after(cursor, "", style="List Paragraph")
-            p_b.add_run(lab).bold = True
-            cursor = p_b
-            p_r = insert_paragraph_after(cursor, safe_text(ev.get(key)), style="Normal")
-            set_run_font_size(p_r, 11)
-            cursor = p_r
+        # Preguntas y respuestas de pares
+        items = [
+            ("1. Aspectos positivos", ev.get("positivos")),
+            ("2. Aspectos a mejorar", ev.get("mejorar")),
+            ("3. Algo más que quieras compartir.", ev.get("algo_mas"))
+        ]
+
+        for q, a in items:
+            p_q = insert_paragraph_after(cursor, "", style="Normal")
+            p_q.add_run(q).bold = True
+            cursor = p_q
+            
+            p_a = insert_paragraph_after(cursor, safe_text(a), style="Normal")
+            set_run_font_size(p_a, 11)
+            cursor = p_a
         
+        # SALTO DE PÁGINA después de cada evaluador (excepto el último)
         if idx < len(evaluaciones) - 1:
-            cursor = insert_paragraph_after(cursor, "", style="Normal")
+            cursor = add_page_break_after(cursor)
 
 # -------------------------
 # Ruta Principal
@@ -152,18 +169,15 @@ def rebuild_feedback_section(doc: Document, evaluaciones: list) -> None:
 @app.post("/generate")
 def generate():
     data = request.json or {}
-    
     raw_evaluado = (data.get("evaluado") or "").strip()
     evaluado = format_name_from_email(raw_evaluado) or PLACEHOLDER
     mes_ano = (data.get("mes_ano") or "").strip() or PLACEHOLDER
     
-    # Autoevaluacion (dict)
     auto = data.get("autoevaluacion")
     if isinstance(auto, str) and auto.strip():
         try: auto = json.loads(auto)
         except: auto = None
         
-    # Evaluaciones (list)
     evs = data.get("evaluaciones") or []
     if isinstance(evs, str):
         try: evs = json.loads(evs)
@@ -182,7 +196,6 @@ def generate():
     doc.save(bio)
     bio.seek(0)
     
-    # RESTAURADO: mes_ano en el nombre del archivo
     filename = f"Performance Review – {evaluado} – {mes_ano}.docx"
     
     return send_file(bio, as_attachment=True, download_name=filename, 
