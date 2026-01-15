@@ -171,6 +171,10 @@ def generate():
         
         # Objetos n8n
         auto_data = data.get("autoevaluacion")
+        print("AUTOEVAL TYPE:", type(auto_data))
+        print("AUTOEVAL KEYS:", list(auto_data.keys()) if isinstance(auto_data, dict) else auto_data)
+        print("AUTOEVAL RAW:", json.dumps(auto_data, ensure_ascii=False, indent=2))
+
         evs_data = data.get("evaluaciones", [])
 
         # Cargar Template
