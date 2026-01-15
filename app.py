@@ -4,39 +4,29 @@ from docx import Document
 from docx.shared import Pt
 from docx.oxml import OxmlElement
 from docx.text.paragraph import Paragraph
-from docx.enum.text import WD_BREAK
 import json
 import os
-import re
-from unicodedata import normalize
 
 app = Flask(__name__)
 PLACEHOLDER = "{{COMPLETAR}}"
 
-# --- HELPERS DE FORMATO Y BÚSQUEDA ---
+# -------------------------
+# Helpers
+# -------------------------
 
 def format_name_from_email(value: str) -> str:
     if not value: return ""
+    value = value.strip()
+    if "@" not in value: return value
     local = value.split("@")[0]
     parts = [p.strip() for p in local.split(".") if p.strip()]
     return " ".join(p.capitalize() for p in parts)
 
-def clean_text(t):
-    """Normaliza texto: minúsculas, sin tildes y sin espacios extra."""
-    if not t: return ""
-    s = normalize('NFD', t.lower())
-    s = re.sub(r'[\u0300-\u036f]', '', s)
-    return s.strip()
+def safe_text(value: str) -> str:
+    v = (value or "").strip()
+    return v if v else PLACEHOLDER
 
-def find_paragraph_index(doc, target_text):
-    """Busca el índice de un párrafo ignorando tildes y mayúsculas."""
-    target = clean_text(target_text)
-    for i, p in enumerate(doc.paragraphs):
-        if target in clean_text(p.text):
-            return i
-    return -1
-
-def insert_paragraph_after(paragraph, text="", style=None):
+def insert_paragraph_after(paragraph: Paragraph, text: str = "", style: str | None = None) -> Paragraph:
     new_p = OxmlElement("w:p")
     paragraph._p.addnext(new_p)
     new_para = Paragraph(new_p, paragraph._parent)
@@ -44,168 +34,172 @@ def insert_paragraph_after(paragraph, text="", style=None):
     if text: new_para.add_run(text)
     return new_para
 
-def remove_paragraph(paragraph):
+def remove_paragraph(paragraph: Paragraph) -> None:
     p = paragraph._p
     p.getparent().remove(p)
 
-def is_heading1(p):
+def find_paragraph_index(doc: Document, target_text: str) -> int:
+    t = (target_text or "").strip().lower()
+    for i, p in enumerate(doc.paragraphs):
+        if (p.text or "").strip().lower() == t:
+            return i
+    return -1
+
+def is_heading1(p: Paragraph) -> bool:
     try:
-        name = (p.style.name or "").lower()
-        return "heading 1" in name or "título 1" in name
+        return (p.style.name or "").strip().lower() == "heading 1"
     except: return False
 
-def set_labeled_line(doc, label, value):
-    """Busca una línea que empiece con label y le concatena el valor."""
+def set_labeled_line(doc: Document, label: str, value: str) -> bool:
+    label_norm = (label or "").strip()
     for p in doc.paragraphs:
-        if p.text.strip().startswith(label):
-            p.text = f"{label} {value}"
-            return
+        txt = (p.text or "").strip()
+        if txt.startswith(label_norm):
+            p.text = f"{label_norm} {value if value else PLACEHOLDER}"
+            return True
+    return False
 
-# --- LÓGICA DE SECCIONES ---
+def set_run_font_size(paragraph: Paragraph, size_pt: int) -> None:
+    for r in paragraph.runs:
+        r.font.size = Pt(size_pt)
 
-def rebuild_self_feedback_section(doc, auto):
-    """Procesa la sección 'Autoevaluación'."""
-    idx = find_paragraph_index(doc, "Autoevaluacion")
-    if idx == -1: return
+def add_page_break_after(paragraph: Paragraph) -> Paragraph:
+    """Inserta un salto de página después del párrafo dado."""
+    p_break = insert_paragraph_after(paragraph, "")
+    run = p_break.add_run()
+    run.add_break(2) # 2 es WD_BREAK.PAGE
+    return p_break
 
-    # 1. Encontrar límites y limpiar contenido viejo
+# -------------------------
+# Secciones Actualizadas
+# -------------------------
+
+def rebuild_self_feedback_section(doc: Document, auto: dict | None) -> None:
+    start_idx = find_paragraph_index(doc, "Autoevaluación")
+    if start_idx == -1: return
+
     end_idx = -1
-    for j in range(idx + 1, len(doc.paragraphs)):
+    for j in range(start_idx + 1, len(doc.paragraphs)):
         if is_heading1(doc.paragraphs[j]):
             end_idx = j
             break
     if end_idx == -1: end_idx = len(doc.paragraphs)
-    for p in reversed(doc.paragraphs[idx + 1:end_idx]):
+
+    for p in reversed(doc.paragraphs[start_idx + 1:end_idx]):
         remove_paragraph(p)
 
-    cursor = doc.paragraphs[idx]
-
-    # 2. Manejo de data de n8n
-    if isinstance(auto, list) and len(auto) > 0: auto = auto[0]
+    cursor = doc.paragraphs[start_idx]
     
-    if not isinstance(auto, dict):
-        insert_paragraph_after(cursor, "No se registró autoevaluación.")
-        return
+    has_content = auto and any(auto.get(k) for k in ["positivos", "mejorar", "algo_mas"])
 
-    pos = auto.get("positivos", "").strip()
-    mej = auto.get("mejorar", "").strip()
-    mas = auto.get("algo_mas", "").strip()
-
-    if not any([pos, mej, mas]):
-        insert_paragraph_after(cursor, "No se registró autoevaluación.")
+    if not has_content:
+        p = insert_paragraph_after(cursor, "No se registró autoevaluación.", style="Normal")
+        set_run_font_size(p, 11)
+        cursor = p
     else:
         mapping = [
-            ("1. Aspectos positivos", pos),
-            ("2. Aspectos a mejorar", mej),
-            ("3. Algo más que quieras compartir.", mas)
+            ("1. Aspectos positivos", auto.get("positivos")),
+            ("2. Aspectos a mejorar", auto.get("mejorar")),
+            ("3. Algo más que quieras compartir.", auto.get("algo_mas"))
         ]
         for label, content in mapping:
-            p_l = insert_paragraph_after(cursor, "")
-            p_l.add_run(label).bold = True
-            txt = content if content else PLACEHOLDER
-            p_t = insert_paragraph_after(p_l, txt)
-            for r in p_t.runs: r.font.size = Pt(11)
-            cursor = p_t
+            # Pregunta en negrita (estilo List Paragraph para bullet o Normal)
+            p_lab = insert_paragraph_after(cursor, "", style="Normal")
+            run = p_lab.add_run(label)
+            run.bold = True
+            cursor = p_lab
+            
+            # Respuesta en normal
+            p_txt = insert_paragraph_after(cursor, safe_text(content), style="Normal")
+            set_run_font_size(p_txt, 11)
+            cursor = p_txt
 
-    # Salto de página
-    p_br = insert_paragraph_after(cursor, "")
-    p_br.add_run().add_break(WD_BREAK.PAGE)
+    # SALTO DE PÁGINA luego de la sección
+    cursor = add_page_break_after(cursor)
 
-def rebuild_feedback_section(doc, evs):
-    """Procesa la sección 'Feedback Recibido' usando la lista de evaluaciones."""
-    idx = find_paragraph_index(doc, "Feedback Recibido")
-    if idx == -1: return
+def rebuild_feedback_section(doc: Document, evaluaciones: list) -> None:
+    start_idx = find_paragraph_index(doc, "Feedback recibido")
+    if start_idx == -1: return
 
-    # Limpiar hasta el final o siguiente Título 1
     end_idx = -1
-    for j in range(idx + 1, len(doc.paragraphs)):
+    for j in range(start_idx + 1, len(doc.paragraphs)):
         if is_heading1(doc.paragraphs[j]):
             end_idx = j
             break
     if end_idx == -1: end_idx = len(doc.paragraphs)
-    for p in reversed(doc.paragraphs[idx + 1:end_idx]):
+
+    for p in reversed(doc.paragraphs[start_idx + 1:end_idx]):
         remove_paragraph(p)
 
-    cursor = doc.paragraphs[idx]
-
-    if not evs or not isinstance(evs, list):
-        insert_paragraph_after(cursor, "No se recibieron evaluaciones de terceros.")
+    cursor = doc.paragraphs[start_idx]
+    if not evaluaciones:
+        p = insert_paragraph_after(cursor, PLACEHOLDER, style="Normal")
+        set_run_font_size(p, 11)
         return
 
-    # Iterar sobre cada evaluación (naranjas, limones, etc.)
-    for i, ev in enumerate(evs):
-        # Separador visual entre evaluadores
-        if i > 0:
-            cursor = insert_paragraph_after(cursor, "-" * 30)
+    for idx, ev in enumerate(evaluaciones):
+        evaluador = format_name_from_email(ev.get("evaluador", "")) or PLACEHOLDER
+        p_eval = insert_paragraph_after(cursor, evaluador, style="Heading 2")
+        cursor = p_eval
 
-        p_name = insert_paragraph_after(cursor, "")
-        nombre_evaluador = format_name_from_email(ev.get("evaluador"))
-        p_name.add_run(f"Evaluador: {nombre_evaluador}").bold = True
-        cursor = p_name
-
-        mapping = [
-            ("Aspectos positivos:", ev.get("positivos")),
-            ("Aspectos a mejorar:", ev.get("mejorar")),
-            ("Algo más que quieras compartir:", ev.get("algo_mas"))
+        # Preguntas y respuestas de pares
+        items = [
+            ("1. Aspectos positivos", ev.get("positivos")),
+            ("2. Aspectos a mejorar", ev.get("mejorar")),
+            ("3. Algo más que quieras compartir.", ev.get("algo_mas"))
         ]
 
-        for label, content in mapping:
-            p_l = insert_paragraph_after(cursor, label)
-            p_l.runs[0].bold = True
-            txt = str(content).strip() if content else PLACEHOLDER
-            p_t = insert_paragraph_after(p_l, txt)
-            for r in p_t.runs: r.font.size = Pt(11)
-            cursor = p_t
+        for q, a in items:
+            p_q = insert_paragraph_after(cursor, "", style="Normal")
+            p_q.add_run(q).bold = True
+            cursor = p_q
+            
+            p_a = insert_paragraph_after(cursor, safe_text(a), style="Normal")
+            set_run_font_size(p_a, 11)
+            cursor = p_a
+        
+        # SALTO DE PÁGINA después de cada evaluador (excepto el último)
+        if idx < len(evaluaciones) - 1:
+            cursor = add_page_break_after(cursor)
 
-# --- RUTAS ---
+# -------------------------
+# Ruta Principal
+# -------------------------
 
 @app.post("/generate")
 def generate():
-    try:
-        data = request.json or {}
-        print("FULL BODY:", json.dumps(data, ensure_ascii=False, indent=2))
-        print("TOP KEYS:", list(data.keys()))
-
-        # Datos básicos
-        raw_evaluado = data.get("evaluado", "").strip()
-        evaluado = format_name_from_email(raw_evaluado) or PLACEHOLDER
-        mes_ano = data.get("mes_ano", "").strip() or PLACEHOLDER
+    data = request.json or {}
+    raw_evaluado = (data.get("evaluado") or "").strip()
+    evaluado = format_name_from_email(raw_evaluado) or PLACEHOLDER
+    mes_ano = (data.get("mes_ano") or "").strip() or PLACEHOLDER
+    
+    auto = data.get("autoevaluacion")
+    if isinstance(auto, str) and auto.strip():
+        try: auto = json.loads(auto)
+        except: auto = None
         
-        # Objetos n8n
-        auto_data = data.get("autoevaluacion")
-        print("AUTOEVAL TYPE:", type(auto_data))
-        print("AUTOEVAL KEYS:", list(auto_data.keys()) if isinstance(auto_data, dict) else auto_data)
-        print("AUTOEVAL RAW:", json.dumps(auto_data, ensure_ascii=False, indent=2))
+    evs = data.get("evaluaciones") or []
+    if isinstance(evs, str):
+        try: evs = json.loads(evs)
+        except: evs = []
 
-        evs_data = data.get("evaluaciones", [])
+    template_path = os.environ.get("TEMPLATE_PATH", "template.docx")
+    doc = Document(template_path) if os.path.exists(template_path) else Document()
 
-        # Cargar Template
-        template_path = "template.docx"
-        if not os.path.exists(template_path):
-            return {"error": "No se encontró template.docx"}, 404
-            
-        doc = Document(template_path)
+    set_labeled_line(doc, "Nombre:", evaluado)
+    set_labeled_line(doc, "Periodo evaluado:", mes_ano)
+    
+    rebuild_self_feedback_section(doc, auto)
+    rebuild_feedback_section(doc, evs)
 
-        # 1. Llenar encabezado
-        set_labeled_line(doc, "Nombre:", evaluado)
-        set_labeled_line(doc, "Periodo evaluado:", mes_ano)
-
-        # 2. Reconstruir secciones
-        rebuild_self_feedback_section(doc, auto_data)
-        rebuild_feedback_section(doc, evs_data)
-
-        # 3. Enviar archivo
-        bio = BytesIO()
-        doc.save(bio)
-        bio.seek(0)
-        
-        filename = f"Performance Review - {evaluado}.docx"
-        return send_file(bio, as_attachment=True, download_name=filename, 
-                         mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-
-    except Exception as e:
-        return {"error": str(e)}, 500
+    bio = BytesIO()
+    doc.save(bio)
+    bio.seek(0)
+    
+    filename = f"Performance Review – {evaluado} – {mes_ano}.docx"
+    
+    return send_file(bio, as_attachment=True, download_name=filename, 
+                     mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(port=5000)
