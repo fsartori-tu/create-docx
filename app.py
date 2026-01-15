@@ -93,7 +93,7 @@ def rebuild_self_feedback_section(doc: Document, auto: dict | None) -> None:
 
     cursor = doc.paragraphs[start_idx]
     
-    has_content = auto and any(auto.get(k) for k in ["positivos", "mejorar", "algo_mas"])
+    has_content = auto and any(auto.get(k) for k in ["evaluador", "positivos", "mejorar", "algo_mas"])
 
     if not has_content:
         p = insert_paragraph_after(cursor, "No se registró autoevaluación.", style="Normal")
