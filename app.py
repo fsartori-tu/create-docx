@@ -163,7 +163,9 @@ def rebuild_feedback_section(doc, evs):
 def generate():
     try:
         data = request.json or {}
-        
+        print("FULL BODY:", json.dumps(data, ensure_ascii=False, indent=2))
+        print("TOP KEYS:", list(data.keys()))
+
         # Datos básicos
         raw_evaluado = data.get("evaluado", "").strip()
         evaluado = format_name_from_email(raw_evaluado) or PLACEHOLDER
